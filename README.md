@@ -6,35 +6,67 @@ OCaml로 작성한 TCP 소켓 기반 멀티 유저 채팅 프로그램입니다.
 ## 아키텍처
 
 ```
-┌───────────────────────────┐
-│ 1. Presentation Tier      │  client.ml
-│    View       view.ml     │  화면 출력
-│    Controller controller.ml│  입력 → 요청 변환, 응답 → View
-└─────────────┬─────────────┘
-              │ TCP Socket  (protocol.ml)
-┌─────────────┴─────────────┐
-│ 2. Business Logic Tier    │  server.ml  (접속 수락, 클라이언트별 스레드)
-│    Controller service.ml  │  요청 처리 · 저장 · 브로드캐스트
-│    Model      model.ml    │  채팅방 / 세션 상태 (Mutex 보호)
-└─────────────┬─────────────┘
-              │
-┌─────────────┴─────────────┐
-│ 3. Data Tier              │  repository.ml → chat_history.log
-└───────────────────────────┘
+┌──────────────────────────────────────────┐
+│ Tier 1. Presentation   (src/client)      │
+│   client.ml       진입점 · 입력/수신 스레드 │
+│   controller.ml   MVC Controller          │  키보드 입력 → 요청, 응답 → View
+│   view.ml         MVC View                │  화면 출력
+└────────────────────┬─────────────────────┘
+                     │ TCP Socket  (src/shared/protocol.ml)
+┌────────────────────┴─────────────────────┐
+│ Tier 2. Business Logic (src/server)       │
+│   server.ml       진입점 · 클라이언트별 스레드 │
+│   chat_service.ml MVC Controller          │  요청 처리 · 저장 · 브로드캐스트
+│   model.ml        MVC Model               │  채팅방 / 세션 상태
+└────────────────────┬─────────────────────┘
+                     │
+┌────────────────────┴─────────────────────┐
+│ Tier 3. Data           (src/data)         │
+│   repository.ml   chat_history.log 저장/조회 │
+└──────────────────────────────────────────┘
 ```
 
-| 파일 | 역할 |
-|---|---|
-| `model.ml` | 도메인 타입(메시지, 세션)과 채팅방 상태 |
-| `protocol.ml` | 소켓 통신 규약 (한 줄 = 한 메시지, 탭 구분) |
-| `repository.ml` | 메시지 영속화 (파일 저장 / 최근 N개 조회) |
-| `service.ml` | 서버 측 비즈니스 로직 |
-| `server.ml` | 서버 진입점 |
-| `view.ml` | 클라이언트 화면 출력 |
-| `controller.ml` | 클라이언트 입력 해석 / 응답 처리 |
-| `client.ml` | 클라이언트 진입점 |
+## 폴더 구조
 
-### 통신 프로토콜
+```
+src/
+  shared/              서버·클라이언트 공용
+    sync.ml            스레드 잠금 도우미 (with_lock)
+    text.ml            문자열 도우미 (탭 필드 분리/결합, BOM·\r 제거)
+    message.ml         채팅 메시지 타입 (공용 Model 데이터)
+    protocol.ml        소켓 통신 규약 (request / response 인코딩·디코딩)
+  data/
+    repository.ml      Tier 3 — 메시지 영속화
+  server/
+    model.ml           Tier 2 — MVC Model
+    chat_service.ml    Tier 2 — MVC Controller (메시지 처리)
+    server.ml          Tier 2 — 서버 진입점
+  client/
+    view.ml            Tier 1 — MVC View
+    controller.ml      Tier 1 — MVC Controller
+    client.ml          Tier 1 — 클라이언트 진입점
+build.ps1              빌드 스크립트 → bin/
+run-server.ps1         서버 실행
+run-client.ps1         클라이언트 실행
+```
+
+## 요청 처리 흐름
+
+```
+[키보드] "hello"
+  → controller.ml   interpret_input        → Send (Say "hello")
+  → client.ml       make_request_sender    → "SAY\thello"  ──소켓──▶
+  → server.ml       serve_requests         → decode_request
+  → chat_service.ml handle_request/handle_say
+        ├─ repository.ml  save             (Tier 3 저장)
+        └─ broadcast (Chat message)        ──소켓──▶ 모든 클라이언트
+  → controller.ml   handle_server_line
+  → view.ml         render                 → "[12:00:00] alice: hello"
+```
+
+## 통신 프로토콜
+
+한 줄 = 메시지 하나, 필드 구분자 = 탭
 
 | 방향 | 형식 |
 |---|---|
@@ -43,7 +75,7 @@ OCaml로 작성한 TCP 소켓 기반 멀티 유저 채팅 프로그램입니다.
 
 ## 요구 사항
 
-- OCaml 5.x (opam) — 표준 라이브러리 `unix`, `threads`만 사용, 추가 패키지 불필요
+- OCaml 5.x (opam) — 표준 배포판의 `unix`, `threads`만 사용, 추가 패키지 불필요
 - Windows: `winget install OCaml.opam` → `opam init`
 
 ## 빌드
@@ -52,17 +84,18 @@ OCaml로 작성한 TCP 소켓 기반 멀티 유저 채팅 프로그램입니다.
 .\build.ps1
 ```
 
-`server.exe`, `client.exe`(네이티브)와 `server.byte`, `client.byte`(바이트코드)가 생성됩니다.
+`bin\server.exe`, `bin\client.exe`(네이티브)와 `bin\server.byte`, `bin\client.byte`(바이트코드)가 생성됩니다.
+중간 파일은 `_build\`에 생깁니다.
 
 ## 실행
 
 ```powershell
-.\run-server.ps1            # 서버 (기본 포트 9000)
-.\run-client.ps1            # 클라이언트 — 터미널 여러 개에서 실행
+.\run-server.ps1                     # 서버 (기본 포트 9000)
+.\run-client.ps1                     # 클라이언트 — 터미널 여러 개에서 실행
 .\run-client.ps1 192.168.0.10 9000   # 다른 PC의 서버에 접속
 ```
 
-> 일부 백신이 새로 컴파일된 `server.exe`를 오탐할 수 있어 `run-server.ps1`은 바이트코드(`ocamlrun server.byte`)로 실행합니다.
+> 일부 백신이 새로 컴파일된 `server.exe`를 오탐할 수 있어 `run-server.ps1`은 바이트코드(`ocamlrun bin\server.byte`)로 실행합니다.
 
 ## 명령어
 
@@ -82,7 +115,7 @@ connected to 127.0.0.1:9000
 *** guest1 is now known as alice
 *** guest2 joined the chat
 *** guest2 is now known as bob
-[02:42:32] alice: Hello bob!
-[02:42:32] bob: Hi alice, OCaml chat works
+[03:15:03] alice: Hello bob!
+[03:15:03] bob: Hi alice, OCaml chat works
 *** online (2): alice, bob
 ```

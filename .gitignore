@@ -1,4 +1,6 @@
 # build outputs
+_build/
+bin/
 *.exe
 *.byte
 *.cmi
