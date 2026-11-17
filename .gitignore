@@ -1,0 +1,11 @@
+# build outputs
+*.exe
+*.byte
+*.cmi
+*.cmo
+*.cmx
+*.o
+*.obj
+
+# runtime data (data tier)
+chat_history.log
