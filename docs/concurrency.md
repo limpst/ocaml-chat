@@ -54,7 +54,7 @@ sequenceDiagram
 
     T->>M: all_sessions room
     Note over M: 잠금 안에서 목록 복사본만 반환
-    M-->>T: [A; B]
+    M-->>T: 세션 목록 복사본 (A, B)
     Note over T: room.lock 해제된 상태로 전송
     T->>S1: send_line "MSG⇥…"
     T->>S2: send_line "MSG⇥…"
