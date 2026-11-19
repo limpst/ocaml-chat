@@ -8,7 +8,10 @@
 Set-Location $PSScriptRoot
 
 # Re-read PATH so opam is found even if this shell was opened before opam was installed
-$env:Path = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')
+# (skipped when opam is already on PATH, e.g. in GitHub Actions after setup-ocaml)
+if (-not (Get-Command opam -ErrorAction SilentlyContinue)) {
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')
+}
 # mingw gcc (used by ocamlopt to assemble/link) lives in opam's internal Cygwin
 $env:Path = "$env:LOCALAPPDATA\opam\.cygwin\root\bin;$env:Path"
 

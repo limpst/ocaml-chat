@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml 5.2
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+
+      - name: Build (build.sh)
+        if: runner.os != 'Windows'
+        run: ./build.sh
+
+      - name: Build (build.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Smoke test (server + scripted client)
+        shell: bash
+        run: ./tests/smoke.sh
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocaml-chat-${{ runner.os }}
+          path: bin/
