@@ -1,0 +1,54 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ["**.md", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["**.md", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+
+jobs:
+  mermaid:
+    name: Mermaid diagrams render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install mermaid-cli
+        run: npm install -g @mermaid-js/mermaid-cli@11.4.2
+
+      - name: Render every Mermaid block in every Markdown file
+        run: |
+          echo '{"args":["--no-sandbox"]}' > "$RUNNER_TEMP/puppeteer.json"
+          out_dir="$RUNNER_TEMP/mermaid"
+          mkdir -p "$out_dir"
+          status=0
+          for f in $(git ls-files '*.md'); do
+            grep -q '```mermaid' "$f" || continue
+            echo "::group::$f"
+            if mmdc -p "$RUNNER_TEMP/puppeteer.json" -i "$f" -o "$out_dir/$(echo "$f" | tr / _)"; then
+              echo "rendered: $f"
+            else
+              echo "::error file=$f::Mermaid diagram failed to render"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
+
+  links:
+    name: Links and anchors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check links (lychee)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --include-fragments --accept 200,429 './**/*.md'
+          fail: true
