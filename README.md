@@ -5,26 +5,77 @@ OCaml로 작성한 TCP 소켓 기반 멀티 유저 채팅 프로그램입니다.
 
 ## 아키텍처
 
+```mermaid
+flowchart TB
+    subgraph T1["Tier 1. Presentation — src/client"]
+        direction LR
+        CL["client.ml<br/>진입점 · 입력/수신 스레드"]
+        CC["controller.ml<br/>MVC Controller<br/>키보드 입력 → 요청, 응답 → View"]
+        CV["view.ml<br/>MVC View<br/>화면 출력"]
+        CL --> CC --> CV
+    end
+
+    subgraph T2["Tier 2. Business Logic — src/server"]
+        direction LR
+        SS["server.ml<br/>진입점 · 클라이언트별 스레드"]
+        CS["chat_service.ml<br/>MVC Controller<br/>요청 처리 · 저장 · 브로드캐스트"]
+        SM["model.ml<br/>MVC Model<br/>채팅방 / 세션 상태"]
+        SS --> CS --> SM
+    end
+
+    subgraph T3["Tier 3. Data — src/data"]
+        direction LR
+        RP["repository.ml<br/>메시지 저장/조회"]
+        LOG[("chat_history.log")]
+        RP <--> LOG
+    end
+
+    T1 <==>|"TCP Socket<br/>src/shared/protocol.ml"| T2
+    T2 ==> T3
 ```
-┌──────────────────────────────────────────┐
-│ Tier 1. Presentation   (src/client)      │
-│   client.ml       진입점 · 입력/수신 스레드 │
-│   controller.ml   MVC Controller          │  키보드 입력 → 요청, 응답 → View
-│   view.ml         MVC View                │  화면 출력
-└────────────────────┬─────────────────────┘
-                     │ TCP Socket  (src/shared/protocol.ml)
-┌────────────────────┴─────────────────────┐
-│ Tier 2. Business Logic (src/server)       │
-│   server.ml       진입점 · 클라이언트별 스레드 │
-│   chat_service.ml MVC Controller          │  요청 처리 · 저장 · 브로드캐스트
-│   model.ml        MVC Model               │  채팅방 / 세션 상태
-└────────────────────┬─────────────────────┘
-                     │
-┌────────────────────┴─────────────────────┐
-│ Tier 3. Data           (src/data)         │
-│   repository.ml   chat_history.log 저장/조회 │
-└──────────────────────────────────────────┘
+
+### 모듈 의존 관계
+
+```mermaid
+flowchart BT
+    subgraph shared["src/shared — 서버·클라이언트 공용"]
+        sync["sync.ml"]
+        text["text.ml"]
+        message["message.ml"]
+        protocol["protocol.ml"]
+    end
+
+    subgraph data["src/data"]
+        repository["repository.ml"]
+    end
+
+    subgraph server["src/server"]
+        model["model.ml"]
+        chat_service["chat_service.ml"]
+        srv["server.ml"]
+    end
+
+    subgraph client["src/client"]
+        view["view.ml"]
+        controller["controller.ml"]
+        cli["client.ml"]
+    end
+
+    message --> text
+    protocol --> message
+    repository --> message
+    repository --> sync
+    model --> sync
+    chat_service --> model
+    chat_service --> repository
+    chat_service --> protocol
+    srv --> chat_service
+    view --> protocol
+    controller --> view
+    cli --> controller
 ```
+
+> 화살표는 "사용한다" 방향입니다. 빌드 순서는 아래(shared) → 위(server / client)입니다.
 
 ## 폴더 구조
 
@@ -52,21 +103,81 @@ run-client.ps1         클라이언트 실행
 
 ## 요청 처리 흐름
 
+키보드로 `hello`를 입력했을 때의 흐름입니다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 사용자 (alice)
+    box Tier 1 · Client
+        participant CC as controller.ml
+        participant CL as client.ml
+        participant V as view.ml
+    end
+    box Tier 2 · Server
+        participant S as server.ml
+        participant CS as chat_service.ml
+    end
+    box Tier 3 · Data
+        participant R as repository.ml
+    end
+
+    U->>CC: "hello"
+    CC->>CL: interpret_input → Send (Say "hello")
+    CL->>S: make_request_sender → "SAY⇥hello" (소켓)
+    S->>S: serve_requests → decode_request
+    S->>CS: handle_request → handle_say
+    CS->>R: save (chat_history.log에 추가)
+    CS-->>CL: broadcast (Chat message) → "MSG⇥time⇥alice⇥hello"
+    Note over CS,CL: 접속한 모든 클라이언트에게 전송
+    CL->>CC: handle_server_line
+    CC->>V: render
+    V->>U: [12:00:00] alice: hello
 ```
-[키보드] "hello"
-  → controller.ml   interpret_input        → Send (Say "hello")
-  → client.ml       make_request_sender    → "SAY\thello"  ──소켓──▶
-  → server.ml       serve_requests         → decode_request
-  → chat_service.ml handle_request/handle_say
-        ├─ repository.ml  save             (Tier 3 저장)
-        └─ broadcast (Chat message)        ──소켓──▶ 모든 클라이언트
-  → controller.ml   handle_server_line
-  → view.ml         render                 → "[12:00:00] alice: hello"
+
+### 클라이언트 연결 수명 주기 (서버)
+
+```mermaid
+flowchart TD
+    A["Unix.accept<br/>접속 대기"] --> B["Thread.create handle_client<br/>클라이언트별 스레드"]
+    B --> C["on_connect<br/>세션 등록 · 환영 인사<br/>최근 대화 5개 · 입장 알림"]
+    C --> D{"input_line"}
+    D -- "End_of_file / 소켓 오류" --> X
+    D -- "한 줄 수신" --> E{"decode_request"}
+    E -- "None" --> F["ERR⇥bad request"] --> D
+    E -- "SAY · NICK · WHO · HIST" --> G["handle_request<br/>→ Keep_connection"] --> D
+    E -- "QUIT" --> X["on_disconnect<br/>세션 제거 · 퇴장 알림"]
+    X --> Y["close_socket"]
+    A -. "다음 접속" .-> A
 ```
 
 ## 통신 프로토콜
 
-한 줄 = 메시지 하나, 필드 구분자 = 탭
+한 줄 = 메시지 하나, 필드 구분자 = 탭(`⇥`)
+
+```mermaid
+flowchart LR
+    subgraph REQ["Client → Server · request"]
+        direction TB
+        r1["SAY⇥text<br/>채팅"]
+        r2["NICK⇥name<br/>닉네임 변경"]
+        r3["WHO<br/>접속자 목록"]
+        r4["HIST<br/>최근 대화"]
+        r5["QUIT<br/>종료"]
+    end
+    subgraph RES["Server → Client · response"]
+        direction TB
+        s1["MSG⇥time⇥author⇥text<br/>채팅 메시지"]
+        s2["SYS⇥text<br/>안내"]
+        s3["USERS⇥a,b,c<br/>접속자 목록"]
+        s4["ERR⇥text<br/>거절 사유"]
+    end
+    r1 --> s1
+    r2 --> s2
+    r2 --> s4
+    r3 --> s3
+    r4 --> s1
+```
 
 | 방향 | 형식 |
 |---|---|
